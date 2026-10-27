@@ -143,11 +143,12 @@ def main() -> None:
     help="Explicit export format override.",
 )
 @click.option("--quiet", is_flag=True, help="Suppress rich console table output.")
+@click.option("--ocr", is_flag=True, help="Force OCR for image-based / scanned PDFs.")
 def extract_cmd(
-    pdf_path: Path, output: Optional[Path], fmt: Optional[str], quiet: bool
+    pdf_path: Path, output: Optional[Path], fmt: Optional[str], quiet: bool, ocr: bool
 ) -> None:
     """Extract electrical specifications, pinouts, thermal limits, and errata from a PDF datasheet."""
-    extractor = DatasheetExtractor()
+    extractor = DatasheetExtractor(enable_ocr=ocr)
     spec = extractor.extract(pdf_path)
 
     if not quiet:
@@ -195,6 +196,7 @@ def extract_cmd(
     type=click.Path(dir_okay=False, path_type=Path),
     help="Export diagnostic report to file (.json, .md, or .html).",
 )
+@click.option("--ocr", is_flag=True, help="Force OCR for image-based / scanned PDFs.")
 def troubleshoot_cmd(
     pdf_path: Path,
     telemetry: Optional[Path],
@@ -203,9 +205,10 @@ def troubleshoot_cmd(
     ambient: Optional[float],
     power: Optional[float],
     output: Optional[Path],
+    ocr: bool,
 ) -> None:
     """Validate live or recorded hardware measurements and symptoms against a PDF datasheet."""
-    extractor = DatasheetExtractor()
+    extractor = DatasheetExtractor(enable_ocr=ocr)
     spec = extractor.extract(pdf_path)
 
     measured_params: Dict[str, float] = {}

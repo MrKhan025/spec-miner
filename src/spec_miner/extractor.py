@@ -4,6 +4,8 @@ PDF Hardware Specification Extractor (`extractor.py`).
 Extracts structured hardware specifications, electrical characteristics tables,
 pinouts, thermal ratings, communication interfaces, and silicon errata from PDF
 datasheets using `pdfplumber` and `pypdf`.
+
+Optional OCR support (scanned / image-based tables) via `pdf2image` + `pytesseract`.
 """
 
 from __future__ import annotations
@@ -64,8 +66,15 @@ class DatasheetExtractor:
         ("PWM", r"(?:(\d+)\s*[x×]?\s*)?\bPWM\b"),
     ]
 
-    def __init__(self, strict: bool = False) -> None:
+    def __init__(
+        self,
+        strict: bool = False,
+        enable_ocr: bool = False,
+        ocr_dpi: int = 300,
+    ) -> None:
         self.strict = strict
+        self.enable_ocr = enable_ocr
+        self.ocr_dpi = ocr_dpi
 
     def extract(self, pdf_path: str | Path) -> HardwareSpec:
         """Parse a PDF datasheet and return a populated HardwareSpec model."""
@@ -98,6 +107,25 @@ class DatasheetExtractor:
                 extracted_tables.extend(tables)
 
         full_text = "\n".join(pages_text)
+
+        # Optional OCR fallback for scanned / image-based PDFs
+        from .ocr import is_ocr_available, ocr_pdf_pages, should_fallback_to_ocr
+
+        use_ocr = self.enable_ocr or should_fallback_to_ocr(pages_text, extracted_tables)
+        if use_ocr:
+            if not is_ocr_available():
+                if self.enable_ocr:
+                    raise ImportError(
+                        'OCR requested but dependencies missing. '
+                        'Install with: pip install "spec-miner[ocr]"'
+                    )
+                # Auto-fallback was requested but OCR not installed → skip silently
+            else:
+                ocr_text, _ = ocr_pdf_pages(path, dpi=self.ocr_dpi)
+                # Prefer OCR text when native extraction was weak, or when forced
+                if self.enable_ocr or should_fallback_to_ocr(pages_text, extracted_tables):
+                    full_text = ocr_text + "\n" + full_text
+
         return self.extract_from_text_and_tables(
             full_text=full_text,
             tables=extracted_tables,
@@ -464,47 +492,48 @@ class DatasheetExtractor:
             thermal.storage_temp_max_c = float(st_temp.group(2))
 
         tj_match = re.search(
-            r"(?:Maximum\s+Junction\s+Temperature|Tj\(max\)|TJ_MAX)\s*[:\-]?\s*\+?(\d+(?:\.\d+)?)\s*°?C",
+            r"(?:Maximum\s+)?Junction\s+Temperature\s*(?:\(T[Jj](?:\s*max)?\))?\s*[:\-]?\s*\+?([\-+]?\d+(?:\.\d+)?)\s*°?C",
             text,
             re.IGNORECASE,
         )
         if tj_match:
             thermal.max_junction_temp_c = float(tj_match.group(1))
 
-        tja_match = re.search(
-            r"(?:Theta_JA|θJA|RθJA|Junction-to-Ambient)\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*°?C/W",
+        theta_ja = re.search(
+            r"(?:θ|theta|Thermal\s+Resistance)\s*(?:JA|J-A|jA)\s*[:\-]?\s*([\-+]?\d+(?:\.\d+)?)\s*°?C/?W",
             text,
             re.IGNORECASE,
         )
-        if tja_match:
-            thermal.theta_ja_c_per_w = float(tja_match.group(1))
+        if theta_ja:
+            thermal.theta_ja_c_per_w = float(theta_ja.group(1))
 
-        tjc_match = re.search(
-            r"(?:Theta_JC|θJC|RθJC|Junction-to-Case)\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*°?C/W",
+        theta_jc = re.search(
+            r"(?:θ|theta|Thermal\s+Resistance)\s*(?:JC|J-C|jC)\s*[:\-]?\s*([\-+]?\d+(?:\.\d+)?)\s*°?C/?W",
             text,
             re.IGNORECASE,
         )
-        if tjc_match:
-            thermal.theta_jc_c_per_w = float(tjc_match.group(1))
+        if theta_jc:
+            thermal.theta_jc_c_per_w = float(theta_jc.group(1))
 
-        # Check tables for thermal parameters as well
+        # Also try table-based thermal extraction
         for table in tables:
-            for row in table or []:
-                row_text = " ".join(self._clean_cell(c) for c in row if c)
-                if not row_text:
+            if not table or len(table) < 2:
+                continue
+            header = " ".join(self._clean_cell(c).lower() for c in table[0])
+            if "thermal" not in header and "θ" not in header and "theta" not in header:
+                continue
+            for row in table[1:]:
+                if not row:
                     continue
-                if thermal.theta_ja_c_per_w is None and re.search(r"θJA|Theta_JA|Junction-to-Ambient", row_text, re.I):
-                    nums = re.findall(r"\b\d+(?:\.\d+)?\b", row_text)
-                    if nums:
-                        thermal.theta_ja_c_per_w = float(nums[0])
-                if thermal.theta_jc_c_per_w is None and re.search(r"θJC|Theta_JC|Junction-to-Case", row_text, re.I):
-                    nums = re.findall(r"\b\d+(?:\.\d+)?\b", row_text)
-                    if nums:
-                        thermal.theta_jc_c_per_w = float(nums[0])
-                if thermal.max_junction_temp_c is None and re.search(r"Junction\s+Temperature|TJ_MAX", row_text, re.I):
-                    nums = re.findall(r"\b\d+(?:\.\d+)?\b", row_text)
-                    if nums:
-                        thermal.max_junction_temp_c = float(nums[-1])
+                row_text = " ".join(self._clean_cell(c) for c in row).lower()
+                if "ja" in row_text or "j-a" in row_text:
+                    val = self._parse_float(self._clean_cell(row[-1]))
+                    if val is not None and thermal.theta_ja_c_per_w is None:
+                        thermal.theta_ja_c_per_w = val
+                if "jc" in row_text or "j-c" in row_text:
+                    val = self._parse_float(self._clean_cell(row[-1]))
+                    if val is not None and thermal.theta_jc_c_per_w is None:
+                        thermal.theta_jc_c_per_w = val
 
         return thermal
 
