@@ -7,3 +7,8 @@ uvicorn>=0.27.0
 python-multipart>=0.0.7
 reportlab>=4.0.0
 httpx>=0.26.0
+
+# Optional OCR support (also needs system packages: tesseract-ocr + poppler-utils)
+# Install with:  pip install "spec-miner[ocr]"
+# pdf2image>=1.17.0
+# pytesseract>=0.3.10

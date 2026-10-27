@@ -2,6 +2,16 @@
 
 All notable changes to `spec-miner` are documented in this file.
 
+## [1.1.0] - 2026-10-27
+
+### Added
+- **Optional OCR support for image-based / scanned datasheets**:
+  - New module `spec_miner.ocr` using `pdf2image` + `pytesseract`.
+  - Automatic fallback when native text/table extraction yields insufficient content.
+  - CLI flag `--ocr` on `extract` and `troubleshoot` to force OCR.
+  - Optional dependency group: `pip install "spec-miner[ocr]"`.
+  - System package notes for `tesseract-ocr` and `poppler-utils`.
+
 ## [1.0.0] - 2026-10-26
 
 ### Added
